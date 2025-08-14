@@ -4,7 +4,6 @@
 import argparse
 import asyncio
 import json
-import re
 from datetime import datetime
 from pathlib import Path
 
@@ -14,11 +13,13 @@ from tqdm import tqdm
 
 ANSWER_MAP = {1: "A", 2: "B", 3: "C", 4: "D"}
 
+
 def load_cache(cache_file: Path | None) -> dict:
     if cache_file and cache_file.exists():
         with cache_file.open("r", encoding="utf-8") as f:
             return json.load(f)
     return {}
+
 
 def save_cache(cache_file: Path | None, cache: dict) -> None:
     if cache_file:
@@ -26,20 +27,28 @@ def save_cache(cache_file: Path | None, cache: dict) -> None:
         with cache_file.open("w", encoding="utf-8") as f:
             json.dump(cache, f, ensure_ascii=False, indent=2)
 
-async def query_llm(client: httpx.AsyncClient, url: str, model: str, system_prompt: str, user_prompt: str) -> str:
-    payload = {"model": model}
-    if url.endswith("/v1/chat/completions"):
+
+async def query_llm(
+    client: httpx.AsyncClient,
+    url: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+) -> str:
+    payload = {"model": model, "seed": 1234}
+    if url.endswith("/chat/completions"):
         payload["messages"] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-    elif url.endswith("/v1/responses"):
+    elif url.endswith("/responses"):
         payload["input"] = [
-            {"role": "system", "content": system_prompt},
+            {"role": "developer", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
+        payload["reasoning"] = {"effort": "high"}
     else:
-        raise ValueError("Unsupported URL. Use /v1/chat/completions or /v1/responses")
+        raise ValueError("Unsupported URL. Use /chat/completions or /responses")
 
     resp = await client.post(url, json=payload)
     resp.raise_for_status()
@@ -48,9 +57,19 @@ async def query_llm(client: httpx.AsyncClient, url: str, model: str, system_prom
         return data["choices"][0]["message"]["content"]
     return data["output"][0]["content"][0]["text"]
 
-async def evaluate_subject(subject_name: str, df: pd.DataFrame, system_prompt: str, client: httpx.AsyncClient,
-                           url: str, model: str, semaphore: asyncio.Semaphore, max_retries: int,
-                           cache: dict, cache_file: Path | None) -> list[str]:
+
+async def evaluate_subject(
+    subject_name: str,
+    df: pd.DataFrame,
+    system_prompt: str,
+    client: httpx.AsyncClient,
+    url: str,
+    model: str,
+    semaphore: asyncio.Semaphore,
+    max_retries: int,
+    cache: dict,
+    cache_file: Path | None,
+) -> list[str]:
     responses = ["" for _ in range(len(df))]
 
     async def process(idx: int, row: pd.Series, pbar: tqdm):
@@ -61,7 +80,11 @@ async def evaluate_subject(subject_name: str, df: pd.DataFrame, system_prompt: s
             return
 
         parts = []
-        if "RAG_Contexts" in df.columns and isinstance(row.get("RAG_Contexts", ""), str) and row.get("RAG_Contexts", "").strip():
+        if (
+            "RAG_Contexts" in df.columns
+            and isinstance(row.get("RAG_Contexts", ""), str)
+            and row.get("RAG_Contexts", "").strip()
+        ):
             parts.append("[Related Contexts]")
             parts.append(row["RAG_Contexts"])
         parts.append(f"Q. {row['question']}")
@@ -71,7 +94,9 @@ async def evaluate_subject(subject_name: str, df: pd.DataFrame, system_prompt: s
         for attempt in range(max_retries):
             try:
                 async with semaphore:
-                    ans = await query_llm(client, url, model, system_prompt, user_prompt)
+                    ans = await query_llm(
+                        client, url, model, system_prompt, user_prompt
+                    )
                 break
             except Exception:
                 if attempt + 1 == max_retries:
@@ -89,22 +114,33 @@ async def evaluate_subject(subject_name: str, df: pd.DataFrame, system_prompt: s
     pbar.close()
     return responses
 
+
 async def evaluate_benchmark(name: str, args) -> None:
     data_dir = Path("data") / name
     subjects = sorted([p for p in data_dir.glob("*.csv")])
     system_prompt_file = data_dir / "system_prompt.txt"
-    system_prompt = system_prompt_file.read_text(encoding="utf-8") if system_prompt_file.exists() else ""
+    system_prompt = (
+        system_prompt_file.read_text(encoding="utf-8")
+        if system_prompt_file.exists()
+        else ""
+    )
 
     sanitized_name = name.replace("/", "__")
     sanitized_model = args.model.replace("/", "__")
-    timestamp = datetime.now().strftime('%y%m%d-%H%M%S')
+    timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
     if args.cache and args.cache.strip():
         cache_dir = Path(args.cache)
         cache_dir.mkdir(parents=True, exist_ok=True)
         existing = sorted(cache_dir.glob(f"{sanitized_name}_{sanitized_model}_*.json"))
-        cache_file = existing[-1] if existing else cache_dir / f"{sanitized_name}_{sanitized_model}_{timestamp}.json"
+        cache_file = (
+            existing[-1]
+            if existing
+            else cache_dir / f"{sanitized_name}_{sanitized_model}_{timestamp}.json"
+        )
     else:
-        cache_file = Path(".cache") / f"{sanitized_name}_{sanitized_model}_{timestamp}.json"
+        cache_file = (
+            Path(".cache") / f"{sanitized_name}_{sanitized_model}_{timestamp}.json"
+        )
     cache = load_cache(cache_file)
 
     print(f"Benchmark {name}: {len(subjects)} subjects")
@@ -119,7 +155,9 @@ async def evaluate_benchmark(name: str, args) -> None:
     total_correct = 0
     total_questions = 0
 
-    async with httpx.AsyncClient(timeout=None, headers={"Authorization": f"Bearer {args.api_key}"}) as client:
+    async with httpx.AsyncClient(
+        timeout=None, headers={"Authorization": f"Bearer {args.api_key}"}
+    ) as client:
         semaphore = asyncio.Semaphore(args.max_concurrency)
         for sub in tqdm(subjects, desc=name):
             df = pd.read_csv(sub)
@@ -142,11 +180,17 @@ async def evaluate_benchmark(name: str, args) -> None:
                     cache,
                     cache_file,
                 )
-            df["Response"] = responses
+            df["response"] = responses
             df["answer_letter"] = df["answer"].map(ANSWER_MAP)
-            pattern = r"(?i)(?:Answer\s*:|Answer\s*:​​​​​​|উত্তর\s*:|उत्तर\s*:|উত্তরঃ|উত্তর\s*:|Antwort\s*:|답변\s*:|정답\s*:|답\s*:|答案\s*：|答案\s*:|答\s*：|答\s*:|答复\s*：|答曰\s*：|الإجابة:|الجواب:|إجابة:|الإجابة النهائية:|الإجابة الصحيحة:|الإجابة الصحيحة هي:|الإجابة هي:|الجواب النهائي:|Respuesta\s*:|Risposta\s*:|答え\s*:|答え\s*：|回答\s*:|回答\s*：|解答\s*:|Jawaban\s*:|Réponse\s*:|Resposta\s*:|Jibu\s*:|Idahun\s*:|Ìdáhùn\s*:|Idáhùn\s*:|Àmọ̀nà\s*:|Àdáhùn\s*:|Ànúgọ\s*:|Àṣàyàn\s*:|The best answer is\s*|The correct choice is\s*|The answer is\s*)[ \t]*([A-D]|[أ-د]|[অ]|[ব]|[ড]|[ঢ]|[Ａ]|[Ｂ]|[Ｃ]|[Ｄ])"
-            df["parsed_response"] = df["Response"].str.extract(pattern, expand=False)
-            df["correct"] = df["answer_letter"].str.upper() == df["parsed_response"].fillna("").str.strip().str.upper()
+
+            pattern = r"(?i)(?:Answer\s*:|Answer\s*:​​​​​​|답변\s*:|정답\s*:|답\s*:|Answer\s*|So Answer\s*|That's\s*|The best answer is\s*|The correct choice is\s*|The answer is\s*)[ \t]*([A-D]|[Ａ]|[Ｂ]|[Ｃ]|[Ｄ])"
+
+            df["parsed_response"] = df["response"].str.extract(pattern, expand=False)
+
+            df["correct"] = (
+                df["answer_letter"].str.upper()
+                == df["parsed_response"].fillna("").str.strip().str.upper()
+            )
             acc = df["correct"].mean()
             summary.append({"subject": sub.stem, "accuracy": acc, "total": len(df)})
             total_correct += int(df["correct"].sum())
@@ -155,22 +199,38 @@ async def evaluate_benchmark(name: str, args) -> None:
             out_df.to_csv(result_root / f"{sub.stem}_result.csv", index=False)
 
     overall_acc = total_correct / total_questions if total_questions else 0.0
-    summary.append({"subject": "overall", "accuracy": overall_acc, "total": total_questions})
+    summary.append(
+        {"subject": "overall", "accuracy": overall_acc, "total": total_questions}
+    )
     pd.DataFrame(summary).to_csv(result_root / "summary.csv", index=False)
 
     print("\nFinal summary:")
     for item in summary:
-        print(f"  {item['subject']}: {item['accuracy']:.2%} ({item['total']} questions)")
+        print(
+            f"  {item['subject']}: {item['accuracy']:.2%} ({item['total']} questions)"
+        )
+    print("\n")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Asynchronous LLM benchmark runner")
-    parser.add_argument("--runlist", type=str, required=True, help="Space separated list of benchmarks to run")
+    parser.add_argument(
+        "--runlist",
+        type=str,
+        required=True,
+        help="Space separated list of benchmarks to run",
+    )
     parser.add_argument("--url", type=str, required=True, help="LLM server URL")
     parser.add_argument("--model", type=str, required=True, help="Model name")
-    parser.add_argument("--max_concurrency", type=int, default=5, help="Max concurrent requests")
-    parser.add_argument("--max_retries", type=int, default=3, help="Max retries per request")
-    parser.add_argument("--api_key", type=str, required=True, help="API key for Authorization header")
+    parser.add_argument(
+        "--max_concurrency", type=int, default=5, help="Max concurrent requests"
+    )
+    parser.add_argument(
+        "--max_retries", type=int, default=3, help="Max retries per request"
+    )
+    parser.add_argument(
+        "--api_key", type=str, required=True, help="API key for Authorization header"
+    )
     parser.add_argument(
         "--cache",
         type=str,
@@ -181,7 +241,7 @@ def main() -> None:
 
     runlist = args.runlist.split()
     for idx, bench in enumerate(runlist, 1):
-        print(f"Starting benchmark {idx}/{len(runlist)}: {bench}")
+        print(f"\nStarting benchmark {idx}/{len(runlist)}: {bench}")
         asyncio.run(evaluate_benchmark(bench, args))
 
 

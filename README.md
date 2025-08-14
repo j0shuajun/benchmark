@@ -1,11 +1,11 @@
-# benchmark
+# Benchmark
 
-## lm_eval CLI
+## `lm_eval` CLI
 
 Run benchmarks against an LLM server:
 
 ```bash
-./lm_eval \
+python -m lm_eval \
     --runlist spec gmit fdryqa \
     --url http://localhost:8000/v1/chat/completions \
     --model my-model \
@@ -14,6 +14,7 @@ Run benchmarks against an LLM server:
     --api_key YOUR_KEY
 ```
 
-Benchmark data should be placed under `data/<benchmark>/<subject>.csv` and results are written to the `results` directory.
-
-Cache files are written to `.cache/<benchmark>_<model>_<time>.json` with slashes converted to underscores; a new cache is created automatically unless `--cache` is provided to resume from an existing file. Result CSVs include both the raw `Response` and the extracted `parsed_response`. When evaluating responses, the runner extracts the first multiple-choice option from the model output using a comprehensive regular expression before scoring.
+- 평가 데이터는 `data/<benchmark>/<subject>.csv` 아래에 배치해야 하며, 결과는 `results`에 저장됩니다.
+- `--cache`옵션을 지정하지 않으면 자동으로 캐시가 생성됩니다.
+- 서버 불안정 등으로 평가가 중단된 경우, `--cache` 인자로 평가를 재개할 수 있습니다.
+- 결과에는 `response`와 `parsed_response`가 저장됩니다.
