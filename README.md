@@ -1,6 +1,7 @@
 # Benchmark
 
 - 특화 벤치마크 평가를 위한 Benchmark CLI
+- Support `/chat/completions` and `/responses` API
 
 ## Setup
 
