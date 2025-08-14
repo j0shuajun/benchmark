@@ -4,6 +4,7 @@
 import argparse
 import asyncio
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -94,7 +95,10 @@ async def evaluate_benchmark(name: str, args) -> None:
     system_prompt_file = data_dir / "system_prompt.txt"
     system_prompt = system_prompt_file.read_text(encoding="utf-8") if system_prompt_file.exists() else ""
 
-    cache_file = Path(args.cache) / f"{name}_{args.model}.json" if args.cache else None
+    sanitized_name = name.replace("/", "_")
+    sanitized_model = args.model.replace("/", "_")
+    timestamp = datetime.now().strftime('%y%m%d-%H%M%S')
+    cache_file = Path(args.cache) if args.cache else Path(".cache") / f"{sanitized_name}_{sanitized_model}_{timestamp}.json"
     cache = load_cache(cache_file)
 
     print(f"Benchmark {name}: {len(subjects)} subjects")
@@ -102,7 +106,7 @@ async def evaluate_benchmark(name: str, args) -> None:
         df = pd.read_csv(sub)
         print(f"  {sub.stem}: {len(df)} questions")
 
-    result_root = Path("results") / f"{name}_{args.model}_{datetime.now().strftime('%y%m%d-%H%M%S')}"
+    result_root = Path("results") / f"{sanitized_name}_{sanitized_model}_{timestamp}"
     result_root.mkdir(parents=True, exist_ok=True)
 
     summary = []
@@ -117,7 +121,9 @@ async def evaluate_benchmark(name: str, args) -> None:
                                                semaphore, args.max_retries, cache, cache_file)
             df["Response"] = responses
             df["answer_letter"] = df["answer"].map(ANSWER_MAP)
-            df["correct"] = df["answer_letter"].str.upper() == df["Response"].str.strip().str.upper()
+            pattern = r"(?i)(?:Answer\s*:|Answer\s*:​​​​​​|উত্তর\s*:|उत्तर\s*:|উত্তরঃ|উত্তর\s*:|Antwort\s*:|답변\s*:|정답\s*:|답\s*:|答案\s*：|答案\s*:|答\s*：|答\s*:|答复\s*：|答曰\s*：|الإجابة:|الجواب:|إجابة:|الإجابة النهائية:|الإجابة الصحيحة:|الإجابة الصحيحة هي:|الإجابة هي:|الجواب النهائي:|Respuesta\s*:|Risposta\s*:|答え\s*:|答え\s*：|回答\s*:|回答\s*：|解答\s*:|Jawaban\s*:|Réponse\s*:|Resposta\s*:|Jibu\s*:|Idahun\s*:|Ìdáhùn\s*:|Idáhùn\s*:|Àmọ̀nà\s*:|Àdáhùn\s*:|Ànúgọ\s*:|Àṣàyàn\s*:|The best answer is\s*|The correct choice is\s*|The answer is\s*)[ \t]*([A-D]|[أ-د]|[অ]|[ব]|[ড]|[ঢ]|[Ａ]|[Ｂ]|[Ｃ]|[Ｄ])"
+            df["parsed_response"] = df["Response"].str.extract(pattern, expand=False)
+            df["correct"] = df["answer_letter"].str.upper() == df["parsed_response"].fillna("").str.strip().str.upper()
             acc = df["correct"].mean()
             summary.append({"subject": sub.stem, "accuracy": acc, "total": len(df)})
             total_correct += int(df["correct"].sum())
@@ -138,7 +144,7 @@ def main() -> None:
     parser.add_argument("--max_concurrency", type=int, default=5, help="Max concurrent requests")
     parser.add_argument("--max_retries", type=int, default=3, help="Max retries per request")
     parser.add_argument("--api_key", type=str, required=True, help="API key for Authorization header")
-    parser.add_argument("--cache", type=str, default=None, help="Cache directory path")
+    parser.add_argument("--cache", type=str, default=None, help="Path to existing cache file to resume from")
     args = parser.parse_args()
 
     runlist = args.runlist.split()
