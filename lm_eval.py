@@ -59,6 +59,7 @@ async def query_llm(
 
 
 async def evaluate_subject(
+    benchmark_name: str,
     subject_name: str,
     df: pd.DataFrame,
     system_prompt: str,
@@ -73,7 +74,7 @@ async def evaluate_subject(
     responses = ["" for _ in range(len(df))]
 
     async def process(idx: int, row: pd.Series, pbar: tqdm):
-        question_key = row["question"]
+        question_key = f"{benchmark_name}/{subject_name}/{row['question']}"
         if question_key in cache and cache[question_key]:
             responses[idx] = cache[question_key]
             pbar.update(1)
@@ -115,7 +116,9 @@ async def evaluate_subject(
     return responses
 
 
-async def evaluate_benchmark(name: str, args) -> None:
+async def evaluate_benchmark(
+    name: str, args, cache: dict, cache_file: Path | None
+) -> None:
     data_dir = Path("data") / name
     subjects = sorted([p for p in data_dir.glob("*.csv")])
     system_prompt_file = data_dir / "system_prompt.txt"
@@ -126,22 +129,8 @@ async def evaluate_benchmark(name: str, args) -> None:
     )
 
     sanitized_name = name.replace("/", "__")
-    sanitized_model = args.model.replace("/", "__")
-    timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
-    if args.cache and args.cache.strip():
-        cache_dir = Path(args.cache)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        existing = sorted(cache_dir.glob(f"{sanitized_name}_{sanitized_model}_*.json"))
-        cache_file = (
-            existing[-1]
-            if existing
-            else cache_dir / f"{sanitized_name}_{sanitized_model}_{timestamp}.json"
-        )
-    else:
-        cache_file = (
-            Path(".cache") / f"{sanitized_name}_{sanitized_model}_{timestamp}.json"
-        )
-    cache = load_cache(cache_file)
+    sanitized_model = getattr(args, "sanitized_model", args.model).replace("/", "__")
+    timestamp = getattr(args, "timestamp", datetime.now().strftime("%y%m%d-%H%M%S"))
 
     print(f"Benchmark {name}: {len(subjects)} subjects")
     for sub in subjects:
@@ -161,14 +150,18 @@ async def evaluate_benchmark(name: str, args) -> None:
         semaphore = asyncio.Semaphore(args.max_concurrency)
         for sub in tqdm(subjects, desc=name):
             df = pd.read_csv(sub)
-            if all((q in cache and cache[q]) for q in df["question"]):
+            sub_keys = [
+                f"{name}/{sub.stem}/{q}" for q in df["question"]
+            ]
+            if all((k in cache and cache[k]) for k in sub_keys):
                 print(f"Skipping {sub.stem}: using cached responses")
                 pbar = tqdm(total=len(df), desc=sub.stem, leave=False)
                 pbar.update(len(df))
                 pbar.close()
-                responses = [cache[q] for q in df["question"]]
+                responses = [cache[k] for k in sub_keys]
             else:
                 responses = await evaluate_subject(
+                    name,
                     sub.stem,
                     df,
                     system_prompt,
@@ -210,6 +203,7 @@ async def evaluate_benchmark(name: str, args) -> None:
             f"  {item['subject']}: {item['accuracy']:.2%} ({item['total']} questions)"
         )
     print("\n")
+    save_cache(cache_file, cache)
 
 
 def main() -> None:
@@ -235,14 +229,32 @@ def main() -> None:
         "--cache",
         type=str,
         default=None,
-        help="Directory for cache files; uses the latest cache if available",
+        help="Directory to store cache file shared across benchmarks",
     )
     args = parser.parse_args()
+
+    sanitized_model = args.model.replace("/", "__")
+    cache_dir = Path(args.cache) if args.cache else Path(".cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    existing = sorted(cache_dir.glob(f"{sanitized_model}_*.json"))
+    timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
+    if existing:
+        cache_file = existing[-1]
+        parts = cache_file.stem.split("_")
+        if len(parts) > 1:
+            timestamp = parts[-1]
+    else:
+        cache_file = cache_dir / f"{sanitized_model}_{timestamp}.json"
+    cache = load_cache(cache_file)
+
+    args.sanitized_model = sanitized_model
+    args.timestamp = timestamp
 
     runlist = args.runlist.split()
     for idx, bench in enumerate(runlist, 1):
         print(f"\nStarting benchmark {idx}/{len(runlist)}: {bench}")
-        asyncio.run(evaluate_benchmark(bench, args))
+        asyncio.run(evaluate_benchmark(bench, args, cache, cache_file))
+    save_cache(cache_file, cache)
 
 
 if __name__ == "__main__":
