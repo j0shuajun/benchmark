@@ -234,18 +234,22 @@ def main() -> None:
     args = parser.parse_args()
 
     sanitized_model = args.model.replace("/", "__")
+    timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
     cache_dir = Path(args.cache) if args.cache else Path(".cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
-    existing = sorted(cache_dir.glob(f"{sanitized_model}_*.json"))
-    timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
-    if existing:
-        cache_file = existing[-1]
-        parts = cache_file.stem.split("_")
-        if len(parts) > 1:
-            timestamp = parts[-1]
+    if args.cache:
+        existing = sorted(cache_dir.glob(f"{sanitized_model}_*.json"))
+        if existing:
+            cache_file = existing[-1]
+            parts = cache_file.stem.split("_")
+            if len(parts) > 1:
+                timestamp = parts[-1]
+        else:
+            cache_file = cache_dir / f"{sanitized_model}_{timestamp}.json"
+        cache = load_cache(cache_file)
     else:
         cache_file = cache_dir / f"{sanitized_model}_{timestamp}.json"
-    cache = load_cache(cache_file)
+        cache = {}
 
     args.sanitized_model = sanitized_model
     args.timestamp = timestamp
