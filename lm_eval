@@ -95,10 +95,16 @@ async def evaluate_benchmark(name: str, args) -> None:
     system_prompt_file = data_dir / "system_prompt.txt"
     system_prompt = system_prompt_file.read_text(encoding="utf-8") if system_prompt_file.exists() else ""
 
-    sanitized_name = name.replace("/", "_")
-    sanitized_model = args.model.replace("/", "_")
+    sanitized_name = name.replace("/", "__")
+    sanitized_model = args.model.replace("/", "__")
     timestamp = datetime.now().strftime('%y%m%d-%H%M%S')
-    cache_file = Path(args.cache) if args.cache else Path(".cache") / f"{sanitized_name}_{sanitized_model}_{timestamp}.json"
+    if args.cache and args.cache.strip():
+        cache_dir = Path(args.cache)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        existing = sorted(cache_dir.glob(f"{sanitized_name}_{sanitized_model}_*.json"))
+        cache_file = existing[-1] if existing else cache_dir / f"{sanitized_name}_{sanitized_model}_{timestamp}.json"
+    else:
+        cache_file = Path(".cache") / f"{sanitized_name}_{sanitized_model}_{timestamp}.json"
     cache = load_cache(cache_file)
 
     print(f"Benchmark {name}: {len(subjects)} subjects")
@@ -117,8 +123,25 @@ async def evaluate_benchmark(name: str, args) -> None:
         semaphore = asyncio.Semaphore(args.max_concurrency)
         for sub in tqdm(subjects, desc=name):
             df = pd.read_csv(sub)
-            responses = await evaluate_subject(sub.stem, df, system_prompt, client, args.url, args.model,
-                                               semaphore, args.max_retries, cache, cache_file)
+            if all((q in cache and cache[q]) for q in df["question"]):
+                print(f"Skipping {sub.stem}: using cached responses")
+                pbar = tqdm(total=len(df), desc=sub.stem, leave=False)
+                pbar.update(len(df))
+                pbar.close()
+                responses = [cache[q] for q in df["question"]]
+            else:
+                responses = await evaluate_subject(
+                    sub.stem,
+                    df,
+                    system_prompt,
+                    client,
+                    args.url,
+                    args.model,
+                    semaphore,
+                    args.max_retries,
+                    cache,
+                    cache_file,
+                )
             df["Response"] = responses
             df["answer_letter"] = df["answer"].map(ANSWER_MAP)
             pattern = r"(?i)(?:Answer\s*:|Answer\s*:​​​​​​|উত্তর\s*:|उत्तर\s*:|উত্তরঃ|উত্তর\s*:|Antwort\s*:|답변\s*:|정답\s*:|답\s*:|答案\s*：|答案\s*:|答\s*：|答\s*:|答复\s*：|答曰\s*：|الإجابة:|الجواب:|إجابة:|الإجابة النهائية:|الإجابة الصحيحة:|الإجابة الصحيحة هي:|الإجابة هي:|الجواب النهائي:|Respuesta\s*:|Risposta\s*:|答え\s*:|答え\s*：|回答\s*:|回答\s*：|解答\s*:|Jawaban\s*:|Réponse\s*:|Resposta\s*:|Jibu\s*:|Idahun\s*:|Ìdáhùn\s*:|Idáhùn\s*:|Àmọ̀nà\s*:|Àdáhùn\s*:|Ànúgọ\s*:|Àṣàyàn\s*:|The best answer is\s*|The correct choice is\s*|The answer is\s*)[ \t]*([A-D]|[أ-د]|[অ]|[ব]|[ড]|[ঢ]|[Ａ]|[Ｂ]|[Ｃ]|[Ｄ])"
@@ -135,6 +158,10 @@ async def evaluate_benchmark(name: str, args) -> None:
     summary.append({"subject": "overall", "accuracy": overall_acc, "total": total_questions})
     pd.DataFrame(summary).to_csv(result_root / "summary.csv", index=False)
 
+    print("\nFinal summary:")
+    for item in summary:
+        print(f"  {item['subject']}: {item['accuracy']:.2%} ({item['total']} questions)")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Asynchronous LLM benchmark runner")
@@ -144,7 +171,12 @@ def main() -> None:
     parser.add_argument("--max_concurrency", type=int, default=5, help="Max concurrent requests")
     parser.add_argument("--max_retries", type=int, default=3, help="Max retries per request")
     parser.add_argument("--api_key", type=str, required=True, help="API key for Authorization header")
-    parser.add_argument("--cache", type=str, default=None, help="Path to existing cache file to resume from")
+    parser.add_argument(
+        "--cache",
+        type=str,
+        default=None,
+        help="Directory for cache files; uses the latest cache if available",
+    )
     args = parser.parse_args()
 
     runlist = args.runlist.split()
