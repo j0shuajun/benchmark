@@ -229,25 +229,25 @@ def main() -> None:
         "--cache",
         type=str,
         default=None,
-        help="Directory to store cache file shared across benchmarks",
+        help=(
+            "Path to cache file. If not provided, a new file is created under .cache."
+        ),
     )
     args = parser.parse_args()
 
     sanitized_model = args.model.replace("/", "__")
     timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
-    cache_dir = Path(args.cache) if args.cache else Path(".cache")
-    cache_dir.mkdir(parents=True, exist_ok=True)
+
     if args.cache:
-        existing = sorted(cache_dir.glob(f"{sanitized_model}_*.json"))
-        if existing:
-            cache_file = existing[-1]
-            parts = cache_file.stem.split("_")
-            if len(parts) > 1:
-                timestamp = parts[-1]
-        else:
-            cache_file = cache_dir / f"{sanitized_model}_{timestamp}.json"
+        cache_file = Path(args.cache)
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache = load_cache(cache_file)
+        parts = cache_file.stem.split("_")
+        if len(parts) > 1:
+            timestamp = parts[-1]
     else:
+        cache_dir = Path(".cache")
+        cache_dir.mkdir(parents=True, exist_ok=True)
         cache_file = cache_dir / f"{sanitized_model}_{timestamp}.json"
         cache = {}
 
